@@ -94,19 +94,19 @@ def linf_proj(image, eps):
 # Main functions
 ##
 
-def make_adversarial_examples(image, true_label, args):
+def make_adversarial_examples(image, true_label, args,model_to_fool):
     '''
     The main process for generating adversarial examples with priors.
     '''
     # Initial setup
-    model_to_fool = ch.load(args.resume_path).cuda()
-    model_to_fool.eval()
 
     prior_size = IMAGENET_SL if not args.tiling else args.tile_size
     upsampler = Upsample(size=(IMAGENET_SL, IMAGENET_SL))
     total_queries = ch.zeros(args.batch_size)
     prior = ch.zeros(args.batch_size, 3, prior_size, prior_size)
     dim = prior.nelement()/args.batch_size
+
+    # FUNCTION
     prior_step = gd_prior_step if args.mode == 'l2' else eg_step
     image_step = l2_image_step if args.mode == 'l2' else linf_step
     proj_maker = l2_proj if args.mode == 'l2' else linf_proj
@@ -121,9 +121,11 @@ def make_adversarial_examples(image, true_label, args):
     orig_images = image.clone()
     orig_classes = model_to_fool(image).argmax(1).cuda()
     correct_classified_mask = (orig_classes == true_label).float()
-    total_ims = correct_classified_mask.sum()
-    not_dones_mask = correct_classified_mask.clone()
+    total_ims = correct_classified_mask.sum() # 原始网络分类成功的数量
+    # print("原始网络分类成功的数量")
+    not_dones_mask = correct_classified_mask.clone() # 如果为1代表要尝试进行攻击
 
+    # 只要有一个样本的查询次数大于最大限制就停止循环
     while not ch.any(total_queries > args.max_queries):
         if not args.nes:
             ## Updating the prior: 
@@ -153,8 +155,8 @@ def make_adversarial_examples(image, true_label, args):
 
         ## Update the image:
         # take a pgd step using the prior
-        new_im = image_step(image, upsampler(prior), args.image_lr)
-        image = proj_step(new_im)
+        new_im = image_step(image, upsampler(prior), args.image_lr) # 尝试得到干扰的图片
+        image = proj_step(new_im) # 映射回约束epsilon空间
         image = ch.clamp(image, 0, 1)
         if args.mode == 'l2':
             if not ch.all(norm(image - orig_images) <= args.epsilon + 1e-3):
@@ -170,9 +172,9 @@ def make_adversarial_examples(image, true_label, args):
         ## Logging stuff
         new_losses = L(image)
         success_mask = (1 - not_dones_mask)*correct_classified_mask
-        num_success = success_mask.sum()
+        num_success = success_mask.sum() # 成功 攻击的数量：原本分类为正确但是攻击之后分类错误的数量
         current_success_rate = (num_success/correct_classified_mask.sum()).cpu().item()
-        success_queries = ((success_mask*total_queries).sum()/num_success).cpu().item()
+        success_queries = ((success_mask*total_queries).sum()/num_success).cpu().item() # 攻击成功的平均查询次数
         not_done_loss = ((new_losses*not_dones_mask).sum()/not_dones_mask.sum()).cpu().item()
         max_curr_queries = total_queries.max().cpu().item()
         if args.log_progress:
@@ -194,22 +196,47 @@ def make_adversarial_examples(image, true_label, args):
 
 def main(args):
     # load data
-    test_loader = get_handled_cifar10_test_loader(num_workers=args.num_workers,shuffle=False,batch_size=args.batch_size)
+    test_loader = get_handled_cifar10_test_loader(num_workers=0,shuffle=False,batch_size=args.batch_size)
 
     average_queries_per_success = 0.0
     total_correctly_classified_ims = 0.0
     success_rate_total = 0.0
     num_batches = 0
+    adv_correct = 0
+    success_query_total = 0
+
+    model_to_fool = ch.load(args.resume_path).cuda()
+    model_to_fool.eval()
+
     for i, (images, targets) in enumerate(test_loader):
-        if i*args.batch_size >= 10:
-            return average_queries_per_success/total_correctly_classified_ims, \
-                    success_rate_total/total_correctly_classified_ims
-        res = make_adversarial_examples(images.cuda(), targets.cuda(), args)
+        # if i*args.batch_size >= 10:
+        #     return average_queries_per_success/total_correctly_classified_ims, \
+        #             success_rate_total/total_correctly_classified_ims
+        prediction = model_to_fool(images.cuda()).max(1,keepdim=True)[1]
+        prediction = prediction.reshape(prediction.size()[0])
+        total_correctly_classified_ims += prediction.eq(targets.cuda()).sum().item()
+
+        res = make_adversarial_examples(images.cuda(), prediction, args, model_to_fool)
+        # res = make_adversarial_examples(images.cuda(), targets.cuda(), args, model_to_fool)
+
         # The results can be analyzed here!
         average_queries_per_success += res['success_rate']*res['average_queries']*res['num_correctly_classified']
-        success_rate_total += res['success_rate']*res['num_correctly_classified']
-        total_correctly_classified_ims += res['num_correctly_classified']
-        num_batches += 1
+        # success_rate_total += res['success_rate']*res['num_correctly_classified']
+        # total_correctly_classified_ims += res['num_correctly_classified']
+        advdata = res['images_adv']
+        print("max perturbation:{}".format((advdata-res['images_orig']).max()))
+        print("min perturbation:{}".format((advdata-res['images_orig']).min()))
+        # print(res['all_queries'])
+
+        # easy bug
+        pred = (model_to_fool(torch.from_numpy(advdata).cuda()).max(1,keepdim=True)[1]) % 10
+        adv_correct += pred.eq(targets.cuda().view_as(pred)).sum().item()
+        success_query_total += res['average_queries']
+
+        # num_batches += 1
+    print("original acc:{}/{} ({:.4f}%)".format(total_correctly_classified_ims,len(test_loader.dataset),100.*total_correctly_classified_ims/len(test_loader.dataset)))
+    print("adv acc:{}/{} ({:.4f})".format(adv_correct,len(test_loader.dataset),adv_correct/len(test_loader.dataset)))
+    print("avg query:{}/{} ({:.4f})".format(success_query_total,len(test_loader),success_query_total/len(test_loader)))
 
 class Parameters():
     '''
