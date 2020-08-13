@@ -270,21 +270,21 @@ if __name__ == "__main__":
     parser.add_argument("--resume_path",type=str)
     args = parser.parse_args()
 
-    args_dict = None
-    if not args.json_config:
-        # If there is no json file, all of the args must be given
-        if not args.nes:
-            assert not any([x is None for x in [args.fd_eta, args.max_queries, args.image_lr, \
-                            args.mode, args.exploration, args.batch_size, args.epsilon]])
-        args_dict = vars(args)
-    else:
-        # If a json file is given, use the JSON file as the base, and then update it with args
-        defaults = json.load(open(args.json_config))
-        arg_vars = vars(args)
-        arg_vars = {k: arg_vars[k] for k in arg_vars if arg_vars[k] is not None}
-        defaults.update(arg_vars)
-        args = Parameters(defaults)
-        args_dict = defaults
+    # args_dict = None
+    # if not args.json_config:
+    #     # If there is no json file, all of the args must be given
+    #     if not args.nes:
+    #         assert not any([x is None for x in [args.fd_eta, args.max_queries, args.image_lr, \
+    #                         args.mode, args.exploration, args.batch_size, args.epsilon]])
+    #     args_dict = vars(args)
+    # else:
+    #     # If a json file is given, use the JSON file as the base, and then update it with args
+    #     defaults = json.load(open(args.json_config))
+    #     arg_vars = vars(args)
+    #     arg_vars = {k: arg_vars[k] for k in arg_vars if arg_vars[k] is not None}
+    #     defaults.update(arg_vars)
+    #     args = Parameters(defaults)
+    #     args_dict = defaults
 
     with ch.no_grad():
         print("Queries, Success = ", main(args))
