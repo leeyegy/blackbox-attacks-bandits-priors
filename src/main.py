@@ -125,6 +125,7 @@ def make_adversarial_examples(image, true_label, args,model_to_fool):
     # print("原始网络分类成功的数量")
     not_dones_mask = correct_classified_mask.clone() # 如果为1代表要尝试进行攻击
 
+    # print("not done:{}".format(not_dones_mask))
     # 只要有一个样本的查询次数大于最大限制就停止循环
     while not ch.any(total_queries > args.max_queries):
         if not args.nes:
@@ -172,6 +173,7 @@ def make_adversarial_examples(image, true_label, args,model_to_fool):
         ## Logging stuff
         new_losses = L(image)
         success_mask = (1 - not_dones_mask)*correct_classified_mask
+        success_fail_total_queries = (correct_classified_mask * total_queries).sum().cpu().item()
         num_success = success_mask.sum() # 成功 攻击的数量：原本分类为正确但是攻击之后分类错误的数量
         current_success_rate = (num_success/correct_classified_mask.sum()).cpu().item()
         success_queries = ((success_mask*total_queries).sum()/num_success).cpu().item() # 攻击成功的平均查询次数
@@ -180,8 +182,9 @@ def make_adversarial_examples(image, true_label, args,model_to_fool):
         if args.log_progress:
             print("Queries: %d | Success rate: %f | Average queries: %f" % (max_curr_queries, current_success_rate, success_queries))
         if current_success_rate == 1.0:
+            print("early stop")
             break
-
+    # print("total_queries:{}".format(total_queries))
     # Return results
     return {
             'average_queries': success_queries, # Average queries for this batch
@@ -191,7 +194,8 @@ def make_adversarial_examples(image, true_label, args,model_to_fool):
             'images_adv': image.cpu().numpy(), # Adversarial images
             'all_queries': total_queries.cpu().numpy(), # Number of queries used for each image
             'correctly_classified': correct_classified_mask.cpu().numpy(), # 0/1 mask for whether image was originally classified
-            'success': success_mask.cpu().numpy() # 0/1 mask for whether the attack succeeds on each image
+            'success': success_mask.cpu().numpy(), # 0/1 mask for whether the attack succeeds on each image
+            'success_fail_total_queries': success_fail_total_queries # total queries number for attacking originally correctly classified images; whether success or fail
     }
 
 def main(args):
@@ -204,6 +208,7 @@ def main(args):
     num_batches = 0
     adv_correct = 0
     success_query_total = 0
+    success_fail_total_queries = 0
 
     model_to_fool = ch.load(args.resume_path).cuda()
     model_to_fool.eval()
@@ -216,8 +221,8 @@ def main(args):
         prediction = prediction.reshape(prediction.size()[0])
         total_correctly_classified_ims += prediction.eq(targets.cuda()).sum().item()
 
-        res = make_adversarial_examples(images.cuda(), prediction, args, model_to_fool)
-        # res = make_adversarial_examples(images.cuda(), targets.cuda(), args, model_to_fool)
+        # res = make_adversarial_examples(images.cuda(), prediction, args, model_to_fool)
+        res = make_adversarial_examples(images.cuda(), targets.cuda(), args, model_to_fool)
 
         # The results can be analyzed here!
         average_queries_per_success += res['success_rate']*res['average_queries']*res['num_correctly_classified']
@@ -232,11 +237,13 @@ def main(args):
         pred = (model_to_fool(torch.from_numpy(advdata).cuda()).max(1,keepdim=True)[1]) % 10
         adv_correct += pred.eq(targets.cuda().view_as(pred)).sum().item()
         success_query_total += res['average_queries']
+        success_fail_total_queries += res['success_fail_total_queries']
 
         # num_batches += 1
     print("original acc:{}/{} ({:.4f}%)".format(total_correctly_classified_ims,len(test_loader.dataset),100.*total_correctly_classified_ims/len(test_loader.dataset)))
     print("adv acc:{}/{} ({:.4f})".format(adv_correct,len(test_loader.dataset),adv_correct/len(test_loader.dataset)))
-    print("avg query:{}/{} ({:.4f})".format(success_query_total,len(test_loader),success_query_total/len(test_loader)))
+    print("avg success query:{}/{} ({:.4f})".format(success_query_total,len(test_loader),success_query_total/len(test_loader)))
+    print("avg success and fail query:{}/{} ({:.4f})".format(success_fail_total_queries,total_correctly_classified_ims,success_fail_total_queries/total_correctly_classified_ims))
 
 class Parameters():
     '''
@@ -285,7 +292,7 @@ if __name__ == "__main__":
     #     defaults.update(arg_vars)
     #     args = Parameters(defaults)
     #     args_dict = defaults
-
+    print("max_queries:{}".format(args.max_queries))
     with ch.no_grad():
         print("Queries, Success = ", main(args))
 
