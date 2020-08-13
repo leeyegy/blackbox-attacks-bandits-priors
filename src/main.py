@@ -4,23 +4,38 @@ from torchvision.datasets import ImageFolder
 from torch.utils.data import DataLoader
 from torch.nn import DataParallel
 from torch.nn.modules import Upsample
+from data_generator import get_handled_cifar10_train_loader,get_handled_cifar10_test_loader
 import argparse
 import json
+import  sys
+sys.path.append("../../")
+from networks import *
 
 ch.set_default_tensor_type('torch.cuda.FloatTensor')
-IMAGENET_SL = 299
-IMAGENET_PATH="PATH_TO_IMAGENET_VALIDATION_SET"
 
-model_to_fool = models.inception_v3(pretrained=True).cuda()
-model_to_fool = DataParallel(model_to_fool)
+# Return network & file name
+def getNetwork(args):
+    if (args.net_type == 'lenet'):
+        net = LeNet(args.num_classes)
+        file_name = 'lenet'
+    elif (args.net_type == 'vggnet'):
+        net = VGG(args.depth, args.num_classes)
+        file_name = 'vgg-'+str(args.depth)
+    elif (args.net_type == 'resnet'):
+        net = ResNet(args.depth, args.num_classes)
+        file_name = 'resnet-'+str(args.depth)
+    elif (args.net_type == 'wide-resnet'):
+        net = Wide_ResNet(args.depth, args.widen_factor, args.dropout, args.num_classes)
+        file_name = 'wide-resnet-'+str(args.depth)+'x'+str(args.widen_factor)
+    else:
+        print('Error : Network should be either [LeNet / VGGNet / ResNet / Wide_ResNet')
+        sys.exit(0)
 
-model_to_fool.eval()
-imagenet = ImageFolder(IMAGENET_PATH, 
-                        transforms.Compose([
-                            transforms.Resize(IMAGENET_SL),
-                            transforms.CenterCrop(IMAGENET_SL),
-                            transforms.ToTensor()
-                        ]))
+    return net, file_name
+
+IMAGENET_SL = 32
+
+
 
 def norm(t):
     """
@@ -84,6 +99,9 @@ def make_adversarial_examples(image, true_label, args):
     The main process for generating adversarial examples with priors.
     '''
     # Initial setup
+    model_to_fool = ch.load(args.resume_path).cuda()
+    model_to_fool.eval()
+
     prior_size = IMAGENET_SL if not args.tiling else args.tile_size
     upsampler = Upsample(size=(IMAGENET_SL, IMAGENET_SL))
     total_queries = ch.zeros(args.batch_size)
@@ -175,12 +193,14 @@ def make_adversarial_examples(image, true_label, args):
     }
 
 def main(args):
-    imagenet_loader = DataLoader(imagenet, batch_size=args.batch_size)
+    # load data
+    test_loader = get_handled_cifar10_test_loader(num_workers=args.num_workers,shuffle=False,batch_size=args.batch_size)
+
     average_queries_per_success = 0.0
     total_correctly_classified_ims = 0.0
     success_rate_total = 0.0
     num_batches = 0
-    for i, (images, targets) in enumerate(imagenet_loader):
+    for i, (images, targets) in enumerate(test_loader):
         if i*args.batch_size >= 10:
             return average_queries_per_success/total_correctly_classified_ims, \
                     success_rate_total/total_correctly_classified_ims
@@ -220,6 +240,7 @@ if __name__ == "__main__":
     parser.add_argument('--nes', action='store_true')
     parser.add_argument('--tiling', action='store_true')
     parser.add_argument('--gradient-iters', type=int)
+    parser.add_argument("--resume_path",type=str)
     args = parser.parse_args()
 
     args_dict = None
